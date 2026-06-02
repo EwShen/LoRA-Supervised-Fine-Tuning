@@ -7,6 +7,7 @@ Required CLI:
 import argparse
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
@@ -262,7 +263,16 @@ class SchemaLinkingModel:
             return lexical_fallback(question, prompt_schema)
 
         prompt = build_prompt(question, prompt_bundle, schema_format=self.schema_format)
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        messages = [{"role": "user", "content": prompt}]
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            inputs = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            ).to(self.model.device)
+        else:
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         gen_kwargs = {
             "max_new_tokens": self.max_new_tokens,
             "do_sample": self.temperature > 0,
@@ -273,12 +283,22 @@ class SchemaLinkingModel:
         gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
 
         with self._torch.no_grad():
-            output_ids = self.model.generate(**inputs, **gen_kwargs)
+            if isinstance(inputs, Mapping):
+                output_ids = self.model.generate(**inputs, **gen_kwargs)
+            else:
+                output_ids = self.model.generate(input_ids=inputs, **gen_kwargs)
 
-        new_tokens = output_ids[0, inputs["input_ids"].shape[1] :]
+        if isinstance(inputs, Mapping):
+            input_len = inputs["input_ids"].shape[1]
+        else:
+            input_len = inputs.shape[1]
+        new_tokens = output_ids[0, input_len:]
         raw_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
         raw_json = extract_first_json_object(raw_text)
-        return canonicalize_prediction(raw_json, schema_bundle["columns"])
+        parsed = canonicalize_prediction(raw_json, schema_bundle["columns"])
+        if not parsed:
+            return lexical_fallback(question, prompt_schema)
+        return parsed
 
 
 def main() -> None:
@@ -295,7 +315,7 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--schema_mode", choices=["full", "lexical"], default="full")
     parser.add_argument("--schema_top_k", type=int, default=8)
-    parser.add_argument("--schema_format", choices=["basic", "pk_fk"], default="basic")
+    parser.add_argument("--schema_format", choices=["basic", "pk_fk"], default="pk_fk")
     args = parser.parse_args()
 
     in_path = Path(args.input)

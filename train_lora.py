@@ -133,11 +133,46 @@ def main():
     ap.add_argument("--gradient_accumulation_steps", type=int, default=8)
     ap.add_argument("--max_seq_length", type=int, default=1536)
     ap.add_argument("--schema_mode", choices=["full", "lexical"], default="full")
-    ap.add_argument("--schema_top_k", type=int, default=8)
-    ap.add_argument("--schema_format", choices=["basic", "pk_fk"], default="basic")
+    ap.add_argument("--schema_top_k", type=int, default=24)
+    ap.add_argument("--schema_format", choices=["basic", "pk_fk"], default="pk_fk")
+    ap.add_argument("--lora_r", type=int, default=32)
+    ap.add_argument("--lora_alpha", type=int, default=64)
+    ap.add_argument("--lora_dropout", type=float, default=0.05)
+    ap.add_argument("--multitable_threshold", type=int, default=2)
+    ap.add_argument("--multitable_factor", type=int, default=1)
+    ap.add_argument(
+        "--sbod_factor",
+        type=int,
+        default=1,
+        help="Oversampling factor for SBODemoUS-* db_id examples.",
+    )
     args = ap.parse_args()
 
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     items = json.loads(Path(args.train_json).read_text(encoding="utf-8"))
+    if args.sbod_factor > 1:
+        balanced_items = []
+        for it in items:
+            db_id = it.get("db_id", "")
+            factor = args.sbod_factor if db_id.startswith("SBODemoUS-") else 1
+            balanced_items.extend([it] * factor)
+        items = balanced_items
+        print(f"Applied SBOD oversampling: factor={args.sbod_factor}, size={len(items)}")
+
+    if args.multitable_factor > 1:
+        balanced_items = []
+        for it in items:
+            n_tables = len(it.get("schema_links", {}))
+            factor = args.multitable_factor if n_tables >= args.multitable_threshold else 1
+            balanced_items.extend([it] * factor)
+        items = balanced_items
+        print(
+            f"Applied multitable oversampling: threshold>={args.multitable_threshold}, "
+            f"factor={args.multitable_factor}, size={len(items)}"
+        )
     examples = []
     for it in items:
         schema_bundle = load_schema_bundle(it["db_id"], args.schemas_dir)
@@ -150,14 +185,20 @@ def main():
         filtered_bundle = apply_table_subset(schema_bundle, filtered_schema)
         prompt = build_prompt(it["question"], filtered_bundle, schema_format=args.schema_format)
         target = json.dumps(it["schema_links"], ensure_ascii=False)
-        text = f"{prompt}\n{target}"
+        if hasattr(tokenizer, "apply_chat_template"):
+            text = tokenizer.apply_chat_template(
+                [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": target},
+                ],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        else:
+            text = f"{prompt}\n{target}"
         examples.append({"text": text})
 
     ds = Dataset.from_list(examples)
-
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
@@ -166,9 +207,9 @@ def main():
     )
 
     peft_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         task_type="CAUSAL_LM",
     )
@@ -179,6 +220,7 @@ def main():
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        max_grad_norm=1.0,
         logging_steps=10,
         save_strategy="epoch",
         report_to="none",
