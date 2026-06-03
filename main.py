@@ -18,7 +18,21 @@ def normalize_db_id_to_filename(db_id: str) -> str:
 
 
 def tokenize(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9_]+", text.lower()))
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", spaced)
+    spaced = re.sub(r"([A-Za-z])([0-9])", r"\1 \2", spaced)
+    spaced = re.sub(r"([0-9])([A-Za-z])", r"\1 \2", spaced)
+    tokens = re.findall(r"[A-Za-z0-9]+", spaced.replace("_", " ").replace("-", " "))
+
+    expanded = set()
+    for token in tokens:
+        t = token.lower()
+        expanded.add(t)
+        if t.endswith("ies") and len(t) > 3:
+            expanded.add(t[:-3] + "y")
+        elif t.endswith("s") and len(t) > 3:
+            expanded.add(t[:-1])
+    return expanded
 
 
 def load_schema_bundle(db_id: str, schemas_dir: str) -> dict[str, Any]:
@@ -357,3 +371,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

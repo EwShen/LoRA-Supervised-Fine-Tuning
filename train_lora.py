@@ -70,7 +70,21 @@ def schema_to_text(schema_bundle: dict[str, Any], schema_format: str) -> str:
 
 
 def tokenize(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9_]+", text.lower()))
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", spaced)
+    spaced = re.sub(r"([A-Za-z])([0-9])", r"\1 \2", spaced)
+    spaced = re.sub(r"([0-9])([A-Za-z])", r"\1 \2", spaced)
+    tokens = re.findall(r"[A-Za-z0-9]+", spaced.replace("_", " ").replace("-", " "))
+
+    expanded = set()
+    for token in tokens:
+        t = token.lower()
+        expanded.add(t)
+        if t.endswith("ies") and len(t) > 3:
+            expanded.add(t[:-3] + "y")
+        elif t.endswith("s") and len(t) > 3:
+            expanded.add(t[:-1])
+    return expanded
 
 
 def filter_schema_for_question(
@@ -146,6 +160,17 @@ def main():
         default=1,
         help="Oversampling factor for SBODemoUS-* db_id examples.",
     )
+    ap.add_argument(
+        "--focus_db_ids",
+        default="",
+        help="Comma-separated db_id values to oversample, e.g. NTSB,NYSED_SRC2022,ATBI.",
+    )
+    ap.add_argument(
+        "--focus_factor",
+        type=int,
+        default=1,
+        help="Oversampling factor for examples whose db_id appears in --focus_db_ids.",
+    )
     args = ap.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
@@ -153,6 +178,19 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     items = json.loads(Path(args.train_json).read_text(encoding="utf-8"))
+    focus_db_ids = {db_id.strip() for db_id in args.focus_db_ids.split(",") if db_id.strip()}
+    if args.focus_factor > 1 and focus_db_ids:
+        balanced_items = []
+        for it in items:
+            db_id = it.get("db_id", "")
+            factor = args.focus_factor if db_id in focus_db_ids else 1
+            balanced_items.extend([it] * factor)
+        items = balanced_items
+        print(
+            f"Applied focus DB oversampling: db_ids={sorted(focus_db_ids)}, "
+            f"factor={args.focus_factor}, size={len(items)}"
+        )
+
     if args.sbod_factor > 1:
         balanced_items = []
         for it in items:
@@ -250,3 +288,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
