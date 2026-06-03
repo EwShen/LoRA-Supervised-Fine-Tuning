@@ -150,6 +150,7 @@ def build_prompt(question: str, schema_bundle: dict[str, Any], schema_format: st
         "1) Use only table/column identifiers present in schema.\n"
         "2) If a table is referenced but no specific columns are referenced, use an empty list.\n"
         "3) No extra keys or text. Output valid JSON only.\n\n"
+        "4) Prefer the most specific table whose columns match the question; do not output related lookup or metadata tables unless their columns are directly needed.\n\n"
         f"Schema:\n{schema_text}\n\n"
         f"Question:\n{question}\n\n"
         "JSON:"
@@ -200,6 +201,18 @@ def canonicalize_prediction(raw_pred: Any, schema: dict[str, list[str]]) -> dict
         out[table_name] = sorted(set(valid_cols))
 
     return out
+
+
+def cap_output_tables(links: dict[str, list[str]], max_tables: int) -> dict[str, list[str]]:
+    if max_tables <= 0:
+        return links
+
+    capped: dict[str, list[str]] = {}
+    for i, (table_name, cols) in enumerate(links.items()):
+        if i >= max_tables:
+            break
+        capped[table_name] = cols
+    return capped
 
 
 class SchemaLinkingModel:
@@ -325,11 +338,12 @@ def main() -> None:
     parser.add_argument("--checkpoint_path", default=None)
     parser.add_argument("--device", default="auto", help='Transformers device_map value (e.g. "auto", "cuda:0")')
     parser.add_argument("--dtype", default="auto", choices=["auto", "float16", "bfloat16", "float32"])
-    parser.add_argument("--max_new_tokens", type=int, default=256)
+    parser.add_argument("--max_new_tokens", type=int, default=192)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--schema_mode", choices=["full", "lexical"], default="full")
-    parser.add_argument("--schema_top_k", type=int, default=8)
+    parser.add_argument("--schema_mode", choices=["full", "lexical"], default="lexical")
+    parser.add_argument("--schema_top_k", type=int, default=25)
     parser.add_argument("--schema_format", choices=["basic", "pk_fk"], default="pk_fk")
+    parser.add_argument("--max_output_tables", type=int, default=5)
     args = parser.parse_args()
 
     in_path = Path(args.input)
@@ -362,6 +376,7 @@ def main() -> None:
         if db_id not in schema_cache:
             schema_cache[db_id] = load_schema_bundle(db_id, args.schemas_dir)
         links = predictor.predict(item["question"], schema_cache[db_id])
+        links = cap_output_tables(links, args.max_output_tables)
         preds.append({"question_id": item["question_id"], "schema_links": links})
 
     with out_path.open("w", encoding="utf-8") as f:
@@ -371,4 +386,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
