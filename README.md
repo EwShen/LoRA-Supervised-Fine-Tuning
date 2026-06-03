@@ -1,6 +1,6 @@
 0.5030 score with adapter_sbod_mt3x_k24_e300_r32
 
-Run the commands below for reproducibility purposes:
+Run the commands below for reproducibility purposes (Click on code above for proper commands):
 
 python main.py \
   --input validation_input.json \
