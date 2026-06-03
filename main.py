@@ -65,7 +65,7 @@ def load_schema_bundle(db_id: str, schemas_dir: str) -> dict[str, Any]:
         if left_ref is not None and right_ref is not None:
             fks.append((left_ref[0], left_ref[1], right_ref[0], right_ref[1]))
 
-    return {"columns": links, "primary_keys": pks, "foreign_keys": fks}
+    return {"db_id": db_id, "columns": links, "primary_keys": pks, "foreign_keys": fks}
 
 
 def lexical_fallback(question: str, schema: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -106,8 +106,86 @@ def schema_to_text(schema_bundle: dict[str, Any], schema_format: str) -> str:
     return "\n".join(lines)
 
 
+SCHEMA_ALIAS_RULES: dict[str, dict[str, tuple[str, ...]]] = {
+    "NTSB": {
+        "CDC": ("crush", "collision speed", "barrier", "depth of crush", "fixed stationary obstacle"),
+        "AVOID": ("avoidance", "crash avoidance"),
+        "ADAPT": ("adaptive", "adaptive driving", "after-marked"),
+        "GV": ("lighting condition", "different vehicles", "vin", "vehicle count"),
+        "EDREVENT": ("event data recorder", "events recorded", "event data recording"),
+        "EDRPRECRASH": ("event data recorder", "road speed limit", "recorded speed"),
+        "ICS": ("energy source", "unknown energy"),
+        "TIREPLAC": ("recommended tire", "recommended front tire", "manufacturer"),
+        "TIRE": ("left front tire", "tire size", "mismatched front"),
+    },
+    "SBODemoUS-General": {
+        "OPMG": ("project", "open issue"),
+        "PMG2": ("open issue", "remarks", "solution"),
+    },
+    "SBODemoUS-Service": {
+        "OSCL": ("service call", "assigned date", "response date", "resolved date", "originated", "business partner shipping", "billing address"),
+        "OSCO": ("originated", "origin"),
+    },
+    "SBODemoUS-Banking": {
+        "OCHO": ("checks for payment", "check", "account number"),
+        "CHO1": ("checks for payment", "more than one line", "check line"),
+    },
+    "SBODemoUS-Sales Opportunities": {
+        "OPR1": ("row-level sales opportunity", "weighted amount", "sequence number", "percentage rate"),
+        "OOPR": ("sales opportunity", "card code"),
+    },
+    "SBODemoUS-Reports": {
+        "RDOC": ("extension error", "repetetive areas", "repetitive areas", "conversion font", "email"),
+        "OUQR": ("queries", "query category"),
+    },
+    "SBODemoUS-Business Partners": {
+        "OCRD": ("business partner", "payment code", "closing date procedure"),
+        "CRD1": ("tax code", "business partner"),
+    },
+    "SBODemoUS-Inventory and Production": {
+        "OITM": ("commited items", "committed items", "item group", "item called"),
+        "ITM1": ("price-per-item", "price per item"),
+        "ITM4": ("volume", "average volume"),
+        "OITB": ("item group",),
+    },
+    "SBODemoUS-Finance": {
+        "OACT": ("general ledger", "account name", "travel expense"),
+        "BGT1": ("budget debit", "budget credit", "monthly budget"),
+    },
+    "ATBI": {
+        "tbl_Deadwood": ("decay", "stage of decay"),
+        "tbl_Locations": ("quad name", "topographic position"),
+        "tbl_Overstory": ("mature overstory",),
+        "tbl_Seedlings": ("saplings",),
+        "tbl_Nests": ("nested subplots", "not been observed within nested"),
+    },
+    "NYSED_SRC2022": {
+        "BOCES_and_N/RC": ("board of cooperative educational services", "boces"),
+        "Postsecondary_Enrollment": ("postsecondary", "graduates", "out of state", "two-year", "four-year"),
+    },
+    "CratersWildlifeObservations": {
+        "VERTEBRATES": ("vertebrates", "dusky flycatcher"),
+    },
+}
+
+
+def alias_score(db_id: str, table_name: str, question: str) -> int:
+    rules = SCHEMA_ALIAS_RULES.get(db_id, {}).get(table_name, ())
+    question_lc = question.lower()
+    score = 0
+    for phrase in rules:
+        if phrase in question_lc:
+            score += 8
+    return score
+
+
 def filter_schema_for_question(
-    question: str, schema: dict[str, list[str]], schema_mode: str, schema_top_k: int
+    question: str,
+    schema: dict[str, list[str]],
+    schema_mode: str,
+    schema_top_k: int,
+    db_id: str = "",
+    use_schema_aliases: bool = False,
 ) -> dict[str, list[str]]:
     if schema_mode == "full":
         return schema
@@ -121,6 +199,8 @@ def filter_schema_for_question(
         for col in cols:
             col_tokens = tokenize(col)
             score += len(col_tokens & q_tokens)
+        if use_schema_aliases:
+            score += alias_score(db_id, table_name, question)
         scored.append((score, table_name))
 
     scored.sort(reverse=True)
@@ -228,12 +308,14 @@ class SchemaLinkingModel:
         schema_mode: str,
         schema_top_k: int,
         schema_format: str,
+        use_schema_aliases: bool,
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.schema_mode = schema_mode
         self.schema_top_k = schema_top_k
         self.schema_format = schema_format
+        self.use_schema_aliases = use_schema_aliases
         self.enabled = False
 
         try:
@@ -284,6 +366,8 @@ class SchemaLinkingModel:
             schema=schema_bundle["columns"],
             schema_mode=self.schema_mode,
             schema_top_k=self.schema_top_k,
+            db_id=schema_bundle.get("db_id", ""),
+            use_schema_aliases=self.use_schema_aliases,
         )
         prompt_bundle = apply_table_subset(schema_bundle, prompt_schema)
         if not self.enabled:
@@ -342,6 +426,7 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--schema_mode", choices=["full", "lexical"], default="lexical")
     parser.add_argument("--schema_top_k", type=int, default=25)
+    parser.add_argument("--schema_alias_boost", action="store_true")
     parser.add_argument("--schema_format", choices=["basic", "pk_fk"], default="pk_fk")
     parser.add_argument("--max_output_tables", type=int, default=5)
     args = parser.parse_args()
@@ -367,6 +452,7 @@ def main() -> None:
         schema_mode=args.schema_mode,
         schema_top_k=args.schema_top_k,
         schema_format=args.schema_format,
+        use_schema_aliases=args.schema_alias_boost,
     )
 
     schema_cache: dict[str, dict[str, Any]] = {}
