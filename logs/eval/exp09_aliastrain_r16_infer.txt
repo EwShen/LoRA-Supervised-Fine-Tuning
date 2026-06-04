@@ -1,0 +1,5 @@
+/opt/pytorch/lib/python3.13/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Loading weights:   0%|          | 0/338 [00:00<?, ?it/s]Loading weights:  37%|███▋      | 124/338 [00:00<00:00, 1216.94it/s]Loading weights:  79%|███████▊  | 266/338 [00:00<00:00, 1276.76it/s]Loading weights: 100%|██████████| 338/338 [00:00<00:00, 1326.61it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Wrote 101 predictions to preds_exp09_aliastrain_r16.json
