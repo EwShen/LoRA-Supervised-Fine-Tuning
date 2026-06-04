@@ -5,6 +5,7 @@ Required CLI:
     python3 main.py --input input.json --output output.json
 """
 import argparse
+import ast
 import json
 import re
 from collections.abc import Mapping
@@ -237,26 +238,115 @@ def build_prompt(question: str, schema_bundle: dict[str, Any], schema_format: st
     )
 
 
+def strip_code_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def trim_trailing_commas(text: str) -> str:
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text
+
+
+def close_truncated_json(text: str) -> str:
+    stack = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+
+    repaired = text.rstrip()
+    while repaired.endswith(","):
+        repaired = repaired[:-1].rstrip()
+    if in_string:
+        repaired += '"'
+    repaired += "".join(reversed(stack))
+    return trim_trailing_commas(repaired)
+
+
+def parse_json_object_candidate(candidate: str) -> dict[str, Any]:
+    candidate = strip_code_fences(candidate)
+    attempts = [
+        candidate,
+        trim_trailing_commas(candidate),
+        close_truncated_json(candidate),
+    ]
+
+    for attempt in attempts:
+        try:
+            parsed = json.loads(attempt)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    for attempt in attempts:
+        try:
+            parsed = ast.literal_eval(attempt)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    return {}
+
+
 def extract_first_json_object(text: str) -> dict[str, Any]:
     start = text.find("{")
     if start == -1:
         return {}
 
     depth = 0
+    in_string = False
+    escape = False
     for i in range(start, len(text)):
         ch = text[i]
-        if ch == "{":
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
             depth += 1
         elif ch == "}":
             depth -= 1
             if depth == 0:
                 candidate = text[start : i + 1]
-                try:
-                    return json.loads(candidate)
-                except json.JSONDecodeError:
-                    break
+                parsed = parse_json_object_candidate(candidate)
+                if parsed:
+                    return parsed
+                break
 
-    return {}
+    return parse_json_object_candidate(text[start:])
 
 
 def canonicalize_prediction(raw_pred: Any, schema: dict[str, list[str]]) -> dict[str, list[str]]:
