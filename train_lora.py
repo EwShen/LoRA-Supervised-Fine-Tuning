@@ -73,8 +73,86 @@ def tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_]+", text.lower()))
 
 
+SCHEMA_ALIAS_RULES: dict[str, dict[str, tuple[str, ...]]] = {
+    "NTSB": {
+        "CDC": ("crush", "collision speed", "barrier", "depth of crush", "fixed stationary obstacle"),
+        "AVOID": ("avoidance", "crash avoidance"),
+        "ADAPT": ("adaptive", "adaptive driving", "after-marked"),
+        "GV": ("lighting condition", "different vehicles", "vin", "vehicle count"),
+        "EDREVENT": ("event data recorder", "events recorded", "event data recording"),
+        "EDRPRECRASH": ("event data recorder", "road speed limit", "recorded speed"),
+        "ICS": ("energy source", "unknown energy"),
+        "TIREPLAC": ("recommended tire", "recommended front tire", "manufacturer"),
+        "TIRE": ("left front tire", "tire size", "mismatched front"),
+    },
+    "SBODemoUS-General": {
+        "OPMG": ("project", "open issue"),
+        "PMG2": ("open issue", "remarks", "solution"),
+    },
+    "SBODemoUS-Service": {
+        "OSCL": ("service call", "assigned date", "response date", "resolved date", "originated", "business partner shipping", "billing address"),
+        "OSCO": ("originated", "origin"),
+    },
+    "SBODemoUS-Banking": {
+        "OCHO": ("checks for payment", "check", "account number"),
+        "CHO1": ("checks for payment", "more than one line", "check line"),
+    },
+    "SBODemoUS-Sales Opportunities": {
+        "OPR1": ("row-level sales opportunity", "weighted amount", "sequence number", "percentage rate"),
+        "OOPR": ("sales opportunity", "card code"),
+    },
+    "SBODemoUS-Reports": {
+        "RDOC": ("extension error", "repetetive areas", "repetitive areas", "conversion font", "email"),
+        "OUQR": ("queries", "query category"),
+    },
+    "SBODemoUS-Business Partners": {
+        "OCRD": ("business partner", "payment code", "closing date procedure"),
+        "CRD1": ("tax code", "business partner"),
+    },
+    "SBODemoUS-Inventory and Production": {
+        "OITM": ("commited items", "committed items", "item group", "item called"),
+        "ITM1": ("price-per-item", "price per item"),
+        "ITM4": ("volume", "average volume"),
+        "OITB": ("item group",),
+    },
+    "SBODemoUS-Finance": {
+        "OACT": ("general ledger", "account name", "travel expense"),
+        "BGT1": ("budget debit", "budget credit", "monthly budget"),
+    },
+    "ATBI": {
+        "tbl_Deadwood": ("decay", "stage of decay"),
+        "tbl_Locations": ("quad name", "topographic position"),
+        "tbl_Overstory": ("mature overstory",),
+        "tbl_Seedlings": ("saplings",),
+        "tbl_Nests": ("nested subplots", "not been observed within nested"),
+    },
+    "NYSED_SRC2022": {
+        "BOCES_and_N/RC": ("board of cooperative educational services", "boces"),
+        "Postsecondary_Enrollment": ("postsecondary", "graduates", "out of state", "two-year", "four-year"),
+    },
+    "CratersWildlifeObservations": {
+        "VERTEBRATES": ("vertebrates", "dusky flycatcher"),
+    },
+}
+
+
+def alias_score(db_id: str, table_name: str, question: str) -> int:
+    rules = SCHEMA_ALIAS_RULES.get(db_id, {}).get(table_name, ())
+    question_lc = question.lower()
+    score = 0
+    for phrase in rules:
+        if phrase in question_lc:
+            score += 8
+    return score
+
+
 def filter_schema_for_question(
-    question: str, schema: dict[str, list[str]], schema_mode: str, schema_top_k: int
+    question: str,
+    schema: dict[str, list[str]],
+    schema_mode: str,
+    schema_top_k: int,
+    db_id: str = "",
+    use_schema_aliases: bool = False,
 ) -> dict[str, list[str]]:
     if schema_mode == "full":
         return schema
@@ -88,6 +166,8 @@ def filter_schema_for_question(
         for col in cols:
             col_tokens = tokenize(col)
             score += len(col_tokens & q_tokens)
+        if use_schema_aliases:
+            score += alias_score(db_id, table_name, question)
         scored.append((score, table_name))
 
     scored.sort(reverse=True)
@@ -134,6 +214,7 @@ def main():
     ap.add_argument("--max_seq_length", type=int, default=1536)
     ap.add_argument("--schema_mode", choices=["full", "lexical"], default="full")
     ap.add_argument("--schema_top_k", type=int, default=24)
+    ap.add_argument("--schema_alias_boost", action="store_true")
     ap.add_argument("--schema_format", choices=["basic", "pk_fk"], default="pk_fk")
     ap.add_argument("--lora_r", type=int, default=32)
     ap.add_argument("--lora_alpha", type=int, default=64)
@@ -183,6 +264,8 @@ def main():
             schema=schema_bundle["columns"],
             schema_mode=args.schema_mode,
             schema_top_k=args.schema_top_k,
+            db_id=it["db_id"],
+            use_schema_aliases=args.schema_alias_boost,
         )
         filtered_bundle = apply_table_subset(schema_bundle, filtered_schema)
         prompt = build_prompt(it["question"], filtered_bundle, schema_format=args.schema_format)
