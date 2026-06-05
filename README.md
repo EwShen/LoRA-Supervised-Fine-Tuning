@@ -1,4 +1,4 @@
-0.5219 score with adapter
+0.5219 score with ./adapter
 
 Run the commands below for reproducibility purposes (Click on code above for proper commands):
 
