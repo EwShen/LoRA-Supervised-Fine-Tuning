@@ -11,10 +11,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 from trl import SFTTrainer
 
 
+# Convert a db_id into the released schema filename convention
 def normalize_db_id_to_filename(db_id: str) -> str:
     return db_id.replace(" ", "_").replace("/", "_") + ".json"
 
 
+# Load a Spider-format schema and convert it into prompt-friendly structures
 def load_schema_bundle(db_id: str, schemas_dir: str) -> dict[str, Any]:
     p = Path(schemas_dir) / normalize_db_id_to_filename(db_id)
     raw = json.loads(p.read_text(encoding="utf-8"))
@@ -47,6 +49,7 @@ def load_schema_bundle(db_id: str, schemas_dir: str) -> dict[str, Any]:
     return {"columns": schema, "primary_keys": pks, "foreign_keys": fks}
 
 
+# Serialize the filtered schema into the text shown to the model
 def schema_to_text(schema_bundle: dict[str, Any], schema_format: str) -> str:
     schema = schema_bundle["columns"]
     lines = []
@@ -69,10 +72,12 @@ def schema_to_text(schema_bundle: dict[str, Any], schema_format: str) -> str:
     return "\n".join(lines)
 
 
+# Tokenize schema identifiers and questions for lexical schema retrieval
 def tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_]+", text.lower()))
 
 
+# Phrase boosts help retrieve opaque schema tables with abbreviated names
 SCHEMA_ALIAS_RULES: dict[str, dict[str, tuple[str, ...]]] = {
     "NTSB": {
         "CDC": ("crush", "collision speed", "barrier", "depth of crush", "fixed stationary obstacle"),
@@ -136,6 +141,7 @@ SCHEMA_ALIAS_RULES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
+# Score one table using hand-built natural-language aliases
 def alias_score(db_id: str, table_name: str, question: str) -> int:
     rules = SCHEMA_ALIAS_RULES.get(db_id, {}).get(table_name, ())
     question_lc = question.lower()
@@ -146,6 +152,7 @@ def alias_score(db_id: str, table_name: str, question: str) -> int:
     return score
 
 
+# Select a compact schema subset using lexical overlap and optional aliases
 def filter_schema_for_question(
     question: str,
     schema: dict[str, list[str]],
@@ -160,6 +167,7 @@ def filter_schema_for_question(
     q_tokens = tokenize(question)
     scored = []
     for table_name, cols in schema.items():
+        # Table-name matches are weighted higher than individual column matches
         score = 0
         table_tokens = tokenize(table_name.replace("-", "_"))
         score += len(table_tokens & q_tokens) * 3
@@ -170,6 +178,7 @@ def filter_schema_for_question(
             score += alias_score(db_id, table_name, question)
         scored.append((score, table_name))
 
+    # Keep only positively matched tables unless nothing matched at all
     scored.sort(reverse=True)
     selected = [t for s, t in scored if s > 0][:schema_top_k]
     if not selected:
@@ -177,6 +186,7 @@ def filter_schema_for_question(
     return {t: schema[t] for t in selected}
 
 
+# Keep PK/FK metadata consistent with the selected table subset
 def apply_table_subset(schema_bundle: dict[str, Any], subset_schema: dict[str, list[str]]) -> dict[str, Any]:
     selected_tables = set(subset_schema.keys())
     pks = {t: [c for c in schema_bundle["primary_keys"].get(t, []) if c in subset_schema[t]] for t in subset_schema}
@@ -187,6 +197,7 @@ def apply_table_subset(schema_bundle: dict[str, Any], subset_schema: dict[str, l
     return {"columns": subset_schema, "primary_keys": pks, "foreign_keys": fks}
 
 
+# Training and inference prompts use the same JSON-only task contract
 def build_prompt(question: str, schema_bundle: dict[str, Any], schema_format: str) -> str:
     return (
         "You are a schema linking model.\n"
@@ -201,6 +212,7 @@ def build_prompt(question: str, schema_bundle: dict[str, Any], schema_format: st
     )
 
 
+# Build SFT examples and train a LoRA adapter
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_json", default="train.json")
@@ -236,6 +248,7 @@ def main():
     items = json.loads(Path(args.train_json).read_text(encoding="utf-8"))
 
     if args.sbod_factor > 1:
+        # Oversample sparse SBOD modules
         balanced_items = []
         for it in items:
             db_id = it.get("db_id", "")
@@ -245,6 +258,7 @@ def main():
         print(f"Applied SBOD oversampling: factor={args.sbod_factor}, size={len(items)}")
 
     if args.multitable_factor > 1:
+        # Oversample examples with multiple linked tables
         balanced_items = []
         for it in items:
             n_tables = len(it.get("schema_links", {}))
@@ -258,6 +272,7 @@ def main():
 
     examples = []
     for it in items:
+        # Build one chat-formatted SFT example per training item
         schema_bundle = load_schema_bundle(it["db_id"], args.schemas_dir)
         filtered_schema = filter_schema_for_question(
             question=it["question"],
@@ -271,6 +286,7 @@ def main():
         prompt = build_prompt(it["question"], filtered_bundle, schema_format=args.schema_format)
         target = json.dumps(it["schema_links"], ensure_ascii=False)
         if hasattr(tokenizer, "apply_chat_template"):
+            # Use the model family's chat template when available
             text = tokenizer.apply_chat_template(
                 [
                     {"role": "user", "content": prompt},
@@ -280,11 +296,13 @@ def main():
                 add_generation_prompt=False,
             )
         else:
+            # Fallback for tokenizers without chat templates
             text = f"{prompt}\n{target}"
         examples.append({"text": text})
 
     ds = Dataset.from_list(examples)
 
+    # Load the base model and attach a LoRA adapter for SFT
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
         torch_dtype="auto",
@@ -299,6 +317,7 @@ def main():
         task_type="CAUSAL_LM",
     )
 
+    # Configure the supervised fine-tuning loop
     train_args = TrainingArguments(
         output_dir="./runs/lora_baseline",
         learning_rate=args.learning_rate,
@@ -323,6 +342,7 @@ def main():
         "max_seq_length": args.max_seq_length,
         "dataset_text_field": "text",
     }
+    # TRL versions differ slightly, so pass only supported SFTTrainer kwargs
     sig = inspect.signature(SFTTrainer.__init__)
     filtered_kwargs = {k: v for k, v in trainer_kwargs.items() if k in sig.parameters}
     trainer = SFTTrainer(**filtered_kwargs)
@@ -335,3 +355,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
