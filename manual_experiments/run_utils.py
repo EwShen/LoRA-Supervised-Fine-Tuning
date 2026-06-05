@@ -14,6 +14,14 @@ def append_if_supported(command: list[str], script_path: str, flag: str, *values
         print(f"[skip] {script_path} does not support {flag}", flush=True)
 
 
+def adapter_exists(adapter_dir: str) -> bool:
+    path = Path(adapter_dir)
+    return (path / "adapter_config.json").exists() and (
+        (path / "adapter_model.safetensors").exists()
+        or (path / "adapter_model.bin").exists()
+    )
+
+
 def run_command(command: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     print("$ " + " ".join(command), flush=True)
@@ -104,7 +112,6 @@ def run_experiment(
         infer_top_k,
         "--schema_format",
         "pk_fk",
-        "--schema_alias_boost",
         "--base_model",
         base_model,
         "--max_new_tokens",
@@ -112,6 +119,10 @@ def run_experiment(
         "--temperature",
         "0.0",
     ]
+    if script_supports_flag("main.py", "--schema_alias_boost"):
+        infer_cmd.insert(infer_cmd.index("--base_model"), "--schema_alias_boost")
+    else:
+        print("[skip] main.py does not support --schema_alias_boost", flush=True)
 
     eval_cmd = [
         "python",
@@ -128,6 +139,9 @@ def run_experiment(
         per_q_path,
     ]
 
-    run_command(train_cmd, log_dir / f"{name}_train.log")
+    if adapter_exists(out_dir):
+        print(f"[skip] Adapter already exists at {out_dir}; skipping training.", flush=True)
+    else:
+        run_command(train_cmd, log_dir / f"{name}_train.log")
     run_command(infer_cmd, log_dir / f"{name}_infer.log")
     run_command(eval_cmd, log_dir / f"{name}_eval.log")
