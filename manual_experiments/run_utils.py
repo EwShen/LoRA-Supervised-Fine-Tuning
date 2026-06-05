@@ -56,6 +56,10 @@ def run_experiment(
     lora_dropout: str = "0.05",
     sbod_factor: str = "3",
     multitable_factor: str = "3",
+    sap_balance_factor: str = "1",
+    lr_scheduler_type: str = "linear",
+    schema_include_types: bool = False,
+    sort_schema_columns: bool = False,
 ) -> None:
     out_dir = f"./adapter_{name}"
     pred_path = f"preds_{name}.json"
@@ -96,6 +100,12 @@ def run_experiment(
     append_if_supported(train_cmd, "train_lora.py", "--lora_dropout", lora_dropout)
     append_if_supported(train_cmd, "train_lora.py", "--sbod_factor", sbod_factor)
     append_if_supported(train_cmd, "train_lora.py", "--multitable_factor", multitable_factor)
+    append_if_supported(train_cmd, "train_lora.py", "--sap_balance_factor", sap_balance_factor)
+    append_if_supported(train_cmd, "train_lora.py", "--lr_scheduler_type", lr_scheduler_type)
+    if schema_include_types:
+        append_if_supported(train_cmd, "train_lora.py", "--schema_include_types")
+    if sort_schema_columns:
+        append_if_supported(train_cmd, "train_lora.py", "--sort_schema_columns")
 
     infer_cmd = [
         "python",
