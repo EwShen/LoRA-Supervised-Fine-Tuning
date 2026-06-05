@@ -2,6 +2,18 @@ import subprocess
 from pathlib import Path
 
 
+def script_supports_flag(script_path: str, flag: str) -> bool:
+    return flag in Path(script_path).read_text(encoding="utf-8")
+
+
+def append_if_supported(command: list[str], script_path: str, flag: str, *values: str) -> None:
+    if script_supports_flag(script_path, flag):
+        command.append(flag)
+        command.extend(values)
+    else:
+        print(f"[skip] {script_path} does not support {flag}", flush=True)
+
+
 def run_command(command: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     print("$ " + " ".join(command), flush=True)
@@ -67,23 +79,15 @@ def run_experiment(
         train_top_k,
         "--schema_format",
         "pk_fk",
-        "--lora_r",
-        lora_r,
-        "--lora_alpha",
-        lora_alpha,
-        "--lora_dropout",
-        lora_dropout,
-        "--sbod_factor",
-        sbod_factor,
-        "--multitable_factor",
-        multitable_factor,
     ]
 
-    # Current pushed main supports alias-aware training. Older local copies do not,
-    # so this flag is intentionally optional at runtime.
-    train_lora_text = Path("train_lora.py").read_text(encoding="utf-8")
-    if "--schema_alias_boost" in train_lora_text:
+    if script_supports_flag("train_lora.py", "--schema_alias_boost"):
         train_cmd.insert(train_cmd.index("--schema_format"), "--schema_alias_boost")
+    append_if_supported(train_cmd, "train_lora.py", "--lora_r", lora_r)
+    append_if_supported(train_cmd, "train_lora.py", "--lora_alpha", lora_alpha)
+    append_if_supported(train_cmd, "train_lora.py", "--lora_dropout", lora_dropout)
+    append_if_supported(train_cmd, "train_lora.py", "--sbod_factor", sbod_factor)
+    append_if_supported(train_cmd, "train_lora.py", "--multitable_factor", multitable_factor)
 
     infer_cmd = [
         "python",
@@ -127,4 +131,3 @@ def run_experiment(
     run_command(train_cmd, log_dir / f"{name}_train.log")
     run_command(infer_cmd, log_dir / f"{name}_infer.log")
     run_command(eval_cmd, log_dir / f"{name}_eval.log")
-
