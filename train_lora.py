@@ -2,7 +2,6 @@ import argparse
 import inspect
 import json
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -23,18 +22,14 @@ def load_schema_bundle(db_id: str, schemas_dir: str) -> dict[str, Any]:
     raw = json.loads(p.read_text(encoding="utf-8"))
     tables = raw["table_names_original"]
     column_names = raw["column_names_original"]
-    column_types = raw.get("column_types", [])
 
     schema = {t: [] for t in tables}
-    col_types_by_table = {t: {} for t in tables}
     col_refs = []
-    for col_idx, (tidx, cname) in enumerate(column_names):
+    for _col_idx, (tidx, cname) in enumerate(column_names):
         if tidx == -1:
             col_refs.append(None)
             continue
         schema[tables[tidx]].append(cname)
-        col_type = column_types[col_idx] if col_idx < len(column_types) else "text"
-        col_types_by_table[tables[tidx]][cname] = col_type
         col_refs.append((tables[tidx], cname))
 
     pks = {t: [] for t in tables}
@@ -51,37 +46,20 @@ def load_schema_bundle(db_id: str, schemas_dir: str) -> dict[str, Any]:
         if left_ref is not None and right_ref is not None:
             fks.append((left_ref[0], left_ref[1], right_ref[0], right_ref[1]))
 
-    return {
-        "columns": schema,
-        "column_types": col_types_by_table,
-        "primary_keys": pks,
-        "foreign_keys": fks,
-    }
+    return {"columns": schema, "primary_keys": pks, "foreign_keys": fks}
 
 
-def schema_to_text(
-    schema_bundle: dict[str, Any],
-    schema_format: str,
-    include_column_types: bool,
-    sort_schema_columns: bool,
-) -> str:
+# Serialize the filtered schema into the text shown to the model
+def schema_to_text(schema_bundle: dict[str, Any], schema_format: str) -> str:
     schema = schema_bundle["columns"]
     lines = []
     for t in sorted(schema):
-        cols = sorted(schema[t]) if sort_schema_columns else schema[t]
-        col_texts = []
-        for col in cols:
-            if include_column_types:
-                col_type = schema_bundle.get("column_types", {}).get(t, {}).get(col, "text")
-                col_texts.append(f"{col} ({str(col_type).upper()})")
-            else:
-                col_texts.append(col)
         if schema_format == "pk_fk":
             pk_cols = schema_bundle["primary_keys"].get(t, [])
             pk_txt = ", ".join(pk_cols) if pk_cols else "-"
-            lines.append(f"- {t}: cols=[{', '.join(col_texts)}] PK=[{pk_txt}]")
+            lines.append(f"- {t}: cols=[{', '.join(schema[t])}] PK=[{pk_txt}]")
         else:
-            lines.append(f"- {t}: [{', '.join(col_texts)}]")
+            lines.append(f"- {t}: [{', '.join(schema[t])}]")
 
     if schema_format == "pk_fk":
         fk_lines = []
@@ -211,28 +189,16 @@ def filter_schema_for_question(
 # Keep PK/FK metadata consistent with the selected table subset
 def apply_table_subset(schema_bundle: dict[str, Any], subset_schema: dict[str, list[str]]) -> dict[str, Any]:
     selected_tables = set(subset_schema.keys())
-    col_types = {
-        t: {
-            c: schema_bundle.get("column_types", {}).get(t, {}).get(c, "text")
-            for c in subset_schema[t]
-        }
-        for t in subset_schema
-    }
     pks = {t: [c for c in schema_bundle["primary_keys"].get(t, []) if c in subset_schema[t]] for t in subset_schema}
     fks = []
     for lt, lc, rt, rc in schema_bundle.get("foreign_keys", []):
         if lt in selected_tables and rt in selected_tables:
             fks.append((lt, lc, rt, rc))
-    return {"columns": subset_schema, "column_types": col_types, "primary_keys": pks, "foreign_keys": fks}
+    return {"columns": subset_schema, "primary_keys": pks, "foreign_keys": fks}
 
 
-def build_prompt(
-    question: str,
-    schema_bundle: dict[str, Any],
-    schema_format: str,
-    include_column_types: bool,
-    sort_schema_columns: bool,
-) -> str:
+# Training and inference prompts use the same JSON-only task contract
+def build_prompt(question: str, schema_bundle: dict[str, Any], schema_format: str) -> str:
     return (
         "You are a schema linking model.\n"
         "Task: Given a question and DB schema, output ONLY a JSON object mapping table names to lists of referenced column names.\n"
@@ -240,7 +206,7 @@ def build_prompt(
         "1) Use only table/column identifiers present in schema.\n"
         "2) If a table is referenced but no specific columns are referenced, use an empty list.\n"
         "3) No extra keys or text. Output valid JSON only.\n\n"
-        f"Schema:\n{schema_to_text(schema_bundle, schema_format=schema_format, include_column_types=include_column_types, sort_schema_columns=sort_schema_columns)}\n\n"
+        f"Schema:\n{schema_to_text(schema_bundle, schema_format=schema_format)}\n\n"
         f"Question:\n{question}\n\n"
         "JSON:"
     )
@@ -262,9 +228,6 @@ def main():
     ap.add_argument("--schema_top_k", type=int, default=24)
     ap.add_argument("--schema_alias_boost", action="store_true")
     ap.add_argument("--schema_format", choices=["basic", "pk_fk"], default="pk_fk")
-    ap.add_argument("--schema_include_types", action="store_true")
-    ap.add_argument("--sort_schema_columns", action="store_true")
-    ap.add_argument("--lr_scheduler_type", default="linear", choices=["linear", "cosine"])
     ap.add_argument("--lora_r", type=int, default=32)
     ap.add_argument("--lora_alpha", type=int, default=64)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
@@ -276,12 +239,6 @@ def main():
         default=1,
         help="Oversampling factor for SBODemoUS-* db_id examples.",
     )
-    ap.add_argument(
-        "--sap_balance_factor",
-        type=int,
-        default=1,
-        help="Additional oversampling factor for rare SBODemoUS/SAP examples.",
-    )
     args = ap.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
@@ -289,17 +246,6 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     items = json.loads(Path(args.train_json).read_text(encoding="utf-8"))
-
-    if args.sap_balance_factor > 1:
-        db_counts = Counter(it.get("db_id", "") for it in items)
-        balanced_items = []
-        for it in items:
-            db_id = it.get("db_id", "")
-            is_rare_sap = db_id.startswith("SBODemoUS-") and db_counts[db_id] <= 24
-            factor = args.sap_balance_factor if is_rare_sap else 1
-            balanced_items.extend([it] * factor)
-        items = balanced_items
-        print(f"Applied rare SAP curriculum balancing: factor={args.sap_balance_factor}, size={len(items)}")
 
     if args.sbod_factor > 1:
         # Oversample sparse SBOD modules
@@ -337,13 +283,7 @@ def main():
             use_schema_aliases=args.schema_alias_boost,
         )
         filtered_bundle = apply_table_subset(schema_bundle, filtered_schema)
-        prompt = build_prompt(
-            it["question"],
-            filtered_bundle,
-            schema_format=args.schema_format,
-            include_column_types=args.schema_include_types,
-            sort_schema_columns=args.sort_schema_columns,
-        )
+        prompt = build_prompt(it["question"], filtered_bundle, schema_format=args.schema_format)
         target = json.dumps(it["schema_links"], ensure_ascii=False)
         if hasattr(tokenizer, "apply_chat_template"):
             # Use the model family's chat template when available
@@ -381,7 +321,6 @@ def main():
     train_args = TrainingArguments(
         output_dir="./runs/lora_baseline",
         learning_rate=args.learning_rate,
-        lr_scheduler_type=args.lr_scheduler_type,
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
