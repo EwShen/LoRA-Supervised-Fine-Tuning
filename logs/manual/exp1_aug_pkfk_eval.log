@@ -1,0 +1,19 @@
+$ python eval.py --predictions preds_exp1_aug_pkfk.json --gold validation_gold_schema_links.json --schemas_dir schemas --questions_input validation_input.json --per_question_out per_q_exp1_aug_pkfk.csv
+Evaluated:                  101 questions
+Schema-invalid identifiers: tables=0, columns=0
+
+---- Table-level (macro-averaged across questions) ----
+  Precision_T : 0.7002
+  Recall_T    : 0.6304
+  F1_T        : 0.6230
+  Table Score : 0.6512     ((P+R+F1)/3)
+
+---- Column-level (Table.Column pairs, macro-averaged) ----
+  Precision_C : 0.4405
+  Recall_C    : 0.3358
+  F1_C        : 0.3378
+  Column Score: 0.3713     ((P+R+F1)/3)
+
+==> Leaderboard Score : 0.5113   (0.5*Table + 0.5*Column)
+
+Per-question metrics written to per_q_exp1_aug_pkfk.csv

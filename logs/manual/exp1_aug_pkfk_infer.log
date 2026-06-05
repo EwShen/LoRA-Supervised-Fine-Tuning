@@ -1,0 +1,11 @@
+$ python main.py --input validation_input.json --output preds_exp1_aug_pkfk.json --adapter_path ./adapter_exp1_aug_pkfk --schema_mode lexical --schema_top_k 25 --schema_format pk_fk --schema_alias_boost --base_model Qwen/Qwen2.5-1.5B-Instruct --max_new_tokens 192 --temperature 0.0
+/opt/pytorch/lib/python3.13/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Sliding Window Attention is enabled but not implemented for `sdpa`; unexpected results may be encountered.
+/opt/pytorch/lib/python3.13/site-packages/transformers/generation/configuration_utils.py:631: UserWarning: `do_sample` is set to `False`. However, `temperature` is set to `0.7` -- this flag is only used in sample-based generation modes. You should set `do_sample=True` or unset `temperature`.
+  warnings.warn(
+/opt/pytorch/lib/python3.13/site-packages/transformers/generation/configuration_utils.py:636: UserWarning: `do_sample` is set to `False`. However, `top_p` is set to `0.8` -- this flag is only used in sample-based generation modes. You should set `do_sample=True` or unset `top_p`.
+  warnings.warn(
+/opt/pytorch/lib/python3.13/site-packages/transformers/generation/configuration_utils.py:653: UserWarning: `do_sample` is set to `False`. However, `top_k` is set to `20` -- this flag is only used in sample-based generation modes. You should set `do_sample=True` or unset `top_k`.
+  warnings.warn(
+Wrote 101 predictions to preds_exp1_aug_pkfk.json
